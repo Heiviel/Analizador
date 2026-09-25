@@ -64,9 +64,19 @@ a{color:var(--teal-soft)}
 .fbcard .placeholder{font-size:13px;color:var(--muted);text-align:center;padding:30px 10px;margin:auto 0}
 #fbBox{flex:1;display:flex;flex-direction:column;justify-content:center}
 
-/* diagrama de acorde (caja vertical estilo cancionero) */
-.chordbox-title{font-family:'Fraunces',serif;font-size:20px;color:var(--brass-soft);margin-bottom:10px;text-align:center}
-.chordbox-svg{display:block;margin:0 auto;max-width:220px}
+/* diagrama de acorde: mismo estilo de mini-diapasón horizontal que Teoría Visual */
+.chordbox-title{font-family:'Fraunces',serif;font-size:20px;color:var(--brass-soft);margin-bottom:18px;text-align:center}
+.mini-fb-wrap{padding:0 20px 22px 44px}
+.mini-fb{position:relative;height:150px;background:linear-gradient(180deg,#3a2c20,#2e2318);border-radius:6px;border:1px solid #1c150e}
+.mini-fb .mnut{position:absolute;top:0;bottom:0;width:4px;background:var(--ivory);border-radius:2px 0 0 2px;z-index:2}
+.mini-fb .mfret{position:absolute;top:0;bottom:0;width:1.5px;background:#9a9a9a;opacity:.6}
+.mini-fb .mstartlabel{position:absolute;top:-16px;left:2px;font-size:10px;color:var(--brass-soft);font-weight:600}
+.mini-fb .mfnum{position:absolute;bottom:-17px;font-size:10px;color:var(--muted);transform:translateX(-50%)}
+.mini-fb .mstring{position:absolute;left:0;right:0;background:#c9c2b2}
+.mini-fb .mdot{position:absolute;width:25px;height:25px;margin:-12.5px 0 0 -12.5px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:700;color:#161A24;border:2px solid transparent;box-shadow:0 1px 3px rgba(0,0,0,.5)}
+.mini-fb .mdot.root{border-color:#fff}
+.mini-fb .mdot.openn{width:21px;height:21px;margin:-10.5px 0 0 -10.5px;font-size:9px}
+.mini-fb .mmute{position:absolute;margin:-9px 0 0 -9px;font-size:14px;color:var(--red);font-weight:700}
 </style>
 </head>
 <body>
@@ -314,56 +324,92 @@ function findChordShape(root,iv){
   }
   return best;
 }
-/* Diagrama vertical estilo cancionero: 6 cuerdas verticales, trastes horizontales, cuerdas fuera
-   de la forma marcadas con ✕ (no se tocan). */
-function chordBoxSvg(root,quality){
+/* Mini-diapasón horizontal (mismo estilo que Teoría Visual): cuerdas apiladas de aguda arriba a
+   grave abajo, trastes como columnas verticales, cuerdas fuera de la forma marcadas con ✕. */
+function chordFbHTML(root,quality){
   const shape=findChordShape(root,quality.iv);
   if(!shape)return `<p class="placeholder">No se encontró una digitación cómoda para este acorde.</p>`;
-  const allFrets=shape.frets;
-  const minF=Math.min(...allFrets), maxF=Math.max(...allFrets);
-  const startFret=minF===0?0:minF;
-  const nFrets=Math.max(4,maxF-startFret+1);
-  const W=180,H=40+nFrets*38,padL=26,padR=14,padT=34;
+  const minF=Math.min(...shape.frets), maxF=Math.max(...shape.frets);
+  const hasOpen=minF===0;
+  const cellStart=hasOpen?1:minF;
+  const nCells=Math.max(4,maxF-cellStart+1);
+  const xFor=f=>((f-cellStart+0.5)/nCells)*100;
   const nStr=OPEN.length;
-  const xFor=s=>padL+(s/(nStr-1))*(W-padL-padR);
-  const yFor=f=>padT+(f-startFret)*38;
-  let svg=`<svg class="chordbox-svg" viewBox="0 0 ${W} ${H}" xmlns="http://www.w3.org/2000/svg">`;
-  // nut o indicador de traste inicial
-  if(startFret===0){
-    svg+=`<rect x="${xFor(0)-1.5}" y="${padT-4}" width="${xFor(nStr-1)-xFor(0)+3}" height="5" fill="#EDE6D6"/>`;
-  } else {
-    svg+=`<text x="${xFor(0)-14}" y="${padT+6}" font-size="11" fill="#8B92A8">${startFret}</text>`;
-  }
-  // trastes
-  for(let f=0;f<=nFrets;f++){
-    const y=padT+f*38;
-    svg+=`<line x1="${xFor(0)}" y1="${y}" x2="${xFor(nStr-1)}" y2="${y}" stroke="#3A4258" stroke-width="1"/>`;
-  }
-  // cuerdas
-  for(let s=0;s<nStr;s++){
-    svg+=`<line x1="${xFor(s)}" y1="${padT}" x2="${xFor(s)}" y2="${padT+nFrets*38}" stroke="#3A4258" stroke-width="1.5"/>`;
-  }
-  // marcas por cuerda: ✕ si no forma parte de la digitación encontrada, punto si sí
-  for(let s=0;s<nStr;s++){
+  const yForRow=row=>12+row*((100-24)/(nStr-1));
+  let html=`<div class="mini-fb-wrap"><div class="mini-fb">`;
+  if(hasOpen)html+=`<div class="mnut" style="left:0%"></div>`;
+  else html+=`<div class="mfret" style="left:0%"></div><div class="mstartlabel">${cellStart}º traste</div>`;
+  for(let i=1;i<=nCells;i++)html+=`<div class="mfret" style="left:${(i/nCells)*100}%"></div>`;
+  for(let i=0;i<nCells;i++)html+=`<div class="mfnum" style="left:${((i+0.5)/nCells)*100}%">${cellStart+i}</div>`;
+  for(let row=0;row<nStr;row++){
+    const s=nStr-1-row;
+    const y=yForRow(row);
+    html+=`<div class="mstring" style="top:${y}%;height:${1+row*0.4}px"></div>`;
     const idx=shape.strs.indexOf(s);
     if(idx<0){
-      svg+=`<text x="${xFor(s)}" y="${padT-12}" font-size="13" fill="#C1584B" text-anchor="middle" font-weight="700">✕</text>`;
+      html+=`<div class="mmute" style="left:-14px;top:${y}%">✕</div>`;
       continue;
     }
     const fret=shape.frets[idx];
     const pc=(OPEN[s]+fret)%12;
     const isRoot=pc===root;
-    const cy=fret===0?padT-14:yFor(fret)-19;
     const label=NN[pc].replace("#","♯");
-    svg+=`<circle cx="${xFor(s)}" cy="${cy}" r="11" fill="${isRoot?"#C9A227":"#4FA8A0"}" stroke="${isRoot?"#fff":"none"}" stroke-width="2"/>`;
-    svg+=`<text x="${xFor(s)}" y="${cy+3.5}" font-size="8.5" fill="#161A24" text-anchor="middle" font-weight="700">${label}</text>`;
+    const bg=isRoot?"var(--brass)":"var(--teal)";
+    if(fret===0)html+=`<div class="mdot openn${isRoot?" root":""}" style="left:-13px;top:${y}%;background:${bg}">${label}</div>`;
+    else html+=`<div class="mdot${isRoot?" root":""}" style="left:${xFor(fret)}%;top:${y}%;background:${bg}">${label}</div>`;
   }
-  svg+=`</svg>`;
-  return svg;
+  html+=`</div></div>`;
+  return html;
 }
 function showChordBox(root,quality){
   document.getElementById("fbTitle").textContent=`${NN[root]} ${quality.name}`;
-  document.getElementById("fbBox").innerHTML=chordBoxSvg(root,quality);
+  document.getElementById("fbBox").innerHTML=chordFbHTML(root,quality);
+}
+
+/* ===== Síntesis (Karplus-Strong, igual que Teoría Visual): para que suenen los acordes al
+   pulsarlos en la lista, no solo se vean. AudioContext propio, separado del que se usa para
+   decodificar y analizar el audio subido. */
+let ACtx=null,master=null;
+function actx(){
+  if(!ACtx){ACtx=new (window.AudioContext||window.webkitAudioContext)();master=ACtx.createGain();master.gain.value=1;master.connect(ACtx.destination);}
+  if(ACtx.state==="suspended")ACtx.resume();
+  return ACtx;
+}
+function ksBuffer(c,freq,duration){
+  const sr=c.sampleRate;
+  const N=Math.max(2,Math.round(sr/freq));
+  const total=Math.max(1,Math.floor(sr*duration));
+  const buf=c.createBuffer(1,total,sr);
+  const data=buf.getChannelData(0);
+  const ring=new Float32Array(N);
+  for(let i=0;i<N;i++)ring[i]=Math.random()*2-1;
+  const decay=0.9955;
+  let idx=0;
+  for(let i=0;i<total;i++){
+    const cur=ring[idx],next=ring[(idx+1)%N];
+    data[i]=cur;
+    ring[idx]=0.5*(cur+next)*decay;
+    idx=(idx+1)%N;
+  }
+  return buf;
+}
+function pluck(midi,t,dur=1.2){
+  const c=actx();
+  const freq=440*Math.pow(2,(midi-69)/12);
+  const src=c.createBufferSource();
+  src.buffer=ksBuffer(c,freq,dur+0.3);
+  const g=c.createGain();
+  g.gain.setValueAtTime(0.85,t);
+  g.gain.setValueAtTime(0.85,t+dur*0.55);
+  g.gain.linearRampToValueAtTime(0.0001,t+dur+0.25);
+  src.connect(g);g.connect(master);
+  src.start(t);src.stop(t+dur+0.3);
+}
+function strum(midis,gap=.055){const c=actx(),n=c.currentTime;midis.forEach((m,i)=>pluck(m,n+i*gap));}
+function playChordSound(root,quality){
+  const shape=findChordShape(root,quality.iv);
+  if(!shape)return;
+  try{strum(shape.strs.map((s,i)=>OPEN[s]+shape.frets[i]));}catch(e){console.warn("Audio no disponible:",e);}
 }
 
 function renderResult(chroma,key){
@@ -422,6 +468,7 @@ document.getElementById("chordList").addEventListener("click",e=>{
   selectedSegIdx=i;
   const s=currentSegments[i];
   showChordBox(s.root,s.quality);
+  playChordSound(s.root,s.quality);
   if(player.src)player.currentTime=s.t0;
   updateChordRowClasses(player.paused?undefined:findSegIdxAtTime(player.currentTime));
 });
@@ -439,6 +486,11 @@ player.addEventListener("timeupdate",()=>{
 });
 player.addEventListener("pause",()=>updateChordRowClasses());
 player.addEventListener("ended",()=>updateChordRowClasses());
+player.addEventListener("error",()=>{
+  const code=player.error?player.error.code:0;
+  const why=code===4?"formato no soportado por el reproductor":"error al decodificar el audio";
+  setStatus(`El análisis salió bien, pero la reproducción falló (${why}). Prueba con otro archivo o formato.`,true);
+});
 
 async function analyzeBlob(blob){
   setStatus("Decodificando audio…");
@@ -452,8 +504,10 @@ async function analyzeBlob(blob){
   renderResult(globalChroma,key);
   const segments=segmentChords(frames,duration,1.5);
   renderChords(segments);
+  ctx.close(); // se abre un AudioContext nuevo en cada análisis solo para decodeAudioData — hay que cerrarlo o el navegador acaba negando abrir más
   if(player.src)URL.revokeObjectURL(player.src);
   player.src=URL.createObjectURL(blob);
+  player.load();
   setStatus("Listo.");
 }
 function resetUI(){
@@ -484,7 +538,7 @@ document.getElementById("btnMic").addEventListener("click",async()=>{
     rec.onstop=async()=>{
       stream.getTracks().forEach(t=>t.stop());
       try{
-        await analyzeBlob(new Blob(chunks));
+        await analyzeBlob(new Blob(chunks,{type:rec.mimeType}));
       }catch(err){
         console.error(err);
         setStatus("No se pudo analizar la grabación: "+err.message,true);
@@ -521,7 +575,7 @@ btnTab.addEventListener("click",async()=>{
     rec.onstop=async()=>{
       stream.getTracks().forEach(t=>t.stop());
       try{
-        await analyzeBlob(new Blob(chunks));
+        await analyzeBlob(new Blob(chunks,{type:rec.mimeType}));
       }catch(err){
         console.error(err);
         setStatus("No se pudo analizar la captura: "+err.message,true);
