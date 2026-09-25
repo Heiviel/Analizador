@@ -34,13 +34,12 @@ label.filepick:hover{border-color:var(--brass)}
 #result{margin-top:16px}
 .keyline{font-family:'Fraunces',serif;font-size:26px;color:var(--brass-soft);font-weight:700}
 .keysub{color:var(--muted);font-size:13px;margin-top:4px}
-.chroma{display:flex;gap:6px;align-items:flex-end;height:120px;margin-top:20px}
-.chroma .bar{flex:1;background:var(--surface2);border-radius:4px 4px 0 0;position:relative;display:flex;align-items:flex-end;justify-content:center}
-.chroma .bar .fill{width:100%;background:var(--teal);border-radius:4px 4px 0 0;transition:height .3s}
-.chroma .bar .fill.root{background:var(--brass)}
-.chroma .lbl{font-size:11px;color:var(--muted);text-align:center;margin-top:6px}
-.chromawrap{display:flex;gap:6px}
-.chromacol{flex:1;display:flex;flex-direction:column;align-items:center}
+.chromawrap{display:flex;gap:4px;margin-top:20px}
+.chromacol{flex:1;min-width:0;display:flex;flex-direction:column;align-items:center}
+.chromabar{width:100%;height:120px;background:var(--surface2);border-radius:4px 4px 0 0;display:flex;align-items:flex-end}
+.chromabar .fill{width:100%;background:var(--teal);border-radius:4px 4px 0 0;transition:height .3s}
+.chromabar .fill.root{background:var(--brass)}
+.chromalbl{font-size:10px;color:var(--muted);text-align:center;margin-top:6px;overflow:hidden;white-space:nowrap;max-width:100%}
 .soon{border:1px dashed var(--line);border-radius:10px;padding:14px;margin-top:16px;font-size:13px;color:var(--muted)}
 a{color:var(--teal-soft)}
 .chordlist{display:flex;flex-direction:column;gap:2px;max-height:340px;overflow-y:auto;margin-top:8px}
@@ -267,11 +266,11 @@ function renderResult(chroma,key){
   const wrap=document.getElementById("chromaWrap");wrap.innerHTML="";
   chroma.forEach((v,i)=>{
     const col=document.createElement("div");col.className="chromacol";
-    const bar=document.createElement("div");bar.className="chroma";bar.style.height="120px";bar.style.width="100%";
+    const bar=document.createElement("div");bar.className="chromabar";
     const fill=document.createElement("div");fill.className="fill"+(i===key.root?" root":"");
-    fill.style.height=Math.max(2,v*100)+"%";fill.style.width="100%";
+    fill.style.height=Math.max(2,v*100)+"%";
     bar.appendChild(fill);
-    const lbl=document.createElement("div");lbl.className="lbl";lbl.textContent=NN[i];
+    const lbl=document.createElement("div");lbl.className="chromalbl";lbl.textContent=NN[i].replace("#","♯");
     col.appendChild(bar);col.appendChild(lbl);
     wrap.appendChild(col);
   });
