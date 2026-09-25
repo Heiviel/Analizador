@@ -300,33 +300,82 @@ function segmentChords(frames,duration,segLen){
 }
 function fmtTime(t){const m=Math.floor(t/60),s=Math.floor(t%60);return `${m}:${String(s).padStart(2,"0")}`;}
 
-/* ===== Diapasón: misma búsqueda de digitación que en Teoría Visual (findShapeN), reimplementada
-   aquí compacta porque este proyecto vive en su propio repo. Afinación estándar de guitarra. */
+/* ===== Diapasón: búsqueda de digitación real, con las mismas limitaciones de la mano que en
+   Teoría Visual — no basta con que las notas encajen, tienen que poder tocarse. Afinación estándar. */
 const OPEN=[40,45,50,55,59,64]; // Mi2 La2 Re3 Sol3 Si3 Mi4
 const FRETS=15;
-function findShapeN(strIdxs,pcsOrdered,spanMax,startBase){
-  spanMax=spanMax||4;startBase=startBase||0;
-  for(let base=startBase;base<=FRETS;base++){
-    const fr=[];let ok=true;
-    for(let i=0;i<strIdxs.length;i++){
-      const open=OPEN[strIdxs[i]];let f=null;
-      for(let x=base;x<=base+spanMax&&x<=FRETS;x++){if((open+x)%12===pcsOrdered[i]){f=x;break;}}
-      if(f===null){ok=false;break;} fr.push(f);
+const MAX_STRETCH=3;   // trastes entre el dedo más grave y el más agudo sin cejilla (índice a meñique)
+const MAX_FINGERS=4;   // una cejilla (varias cuerdas al mismo traste) cuenta como un único dedo
+
+/* ¿Se puede tocar esta digitación con una mano? Dos cuerdas al mismo traste solo comparten UN dedo
+   (cejilla) si son cuerdas contiguas; el mismo traste en cuerdas separadas por otras son pisadas
+   independientes con dedos distintos, cada una contando por su cuenta. Una cejilla real exige además
+   que todo lo que quede "debajo" de su propio tramo esté pisado a ese traste o a uno más agudo —
+   nunca al aire ni a un traste más grave, porque el dedo que hace de cejilla lo silenciaría o taparía. */
+function shapeFeasible(frets){
+  const stops=[];
+  frets.forEach((f,i)=>{if(f>0)stops.push(i);});
+  if(!stops.length)return true;
+  const vals=stops.map(i=>frets[i]);
+  if(Math.max(...vals)-Math.min(...vals)>MAX_STRETCH)return false;
+  const byFret={};
+  stops.forEach(i=>(byFret[frets[i]]=byFret[frets[i]]||[]).push(i));
+  let fingers=0;
+  for(const fretStr in byFret){
+    const fret=+fretStr,idxs=byFret[fretStr];
+    let runStart=idxs[0];
+    for(let k=0;k<idxs.length;k++){
+      if(k===idxs.length-1||idxs[k+1]!==idxs[k]+1){
+        const runEnd=idxs[k];
+        if(runEnd>runStart)for(let p=runStart;p<=runEnd;p++)if(frets[p]<fret)return false;
+        fingers++;
+        runStart=idxs[k+1];
+      }
     }
-    if(ok)return fr;
-  } return null;
+  }
+  return fingers<=MAX_FINGERS;
 }
-/* Prueba todas las ventanas de cuerdas contiguas que quepan el nº de notas del acorde y se queda
-   con la de traste medio más bajo (posición más cómoda/grave). */
+/* Todas las formas de repartir `size` cuerdas entre los `nTones` sonidos del acorde de modo que
+   los use todos al menos una vez (permutaciones si size==nTones, con notas dobladas si size es
+   mayor) — así se exploran tanto inversiones como acordes abiertos con alguna nota al aire de más. */
+function tonesAssignments(nTones,size){
+  const out=[],cur=new Array(size).fill(0);
+  (function rec(pos){
+    if(pos===size){if(new Set(cur).size===nTones)out.push(cur.slice());return;}
+    for(let t=0;t<nTones;t++){cur[pos]=t;rec(pos+1);}
+  })(0);
+  return out;
+}
+/* Busca la digitación más cómoda (trastes más bajos, con preferencia por dejar la fundamental en
+   la cuerda más grave) probando cada tramo de cuerdas contiguas, desde el mínimo de notas del
+   acorde hasta las 6 cuerdas —doblando alguna nota, como en los acordes abiertos reales—, y cada
+   orden posible de esas notas (triada en fundamental, primera o segunda inversión, etc). Descarta
+   cualquier resultado que shapeFeasible() no pueda tocar una mano real. */
 function findChordShape(root,iv){
+  const nStr=OPEN.length;
   let best=null;
-  for(let startStr=0;startStr<=OPEN.length-iv.length;startStr++){
-    const strs=Array.from({length:iv.length},(_,i)=>startStr+i);
-    const pcsOrdered=iv.map(x=>(root+x)%12);
-    const fr=findShapeN(strs,pcsOrdered,4,0);
-    if(fr){
-      const avg=fr.reduce((a,b)=>a+b,0)/fr.length;
-      if(!best||avg<best.avg)best={strs,frets:fr,avg};
+  for(let size=iv.length;size<=nStr;size++){
+    const assigns=tonesAssignments(iv.length,size);
+    for(let startStr=0;startStr<=nStr-size;startStr++){
+      const strs=Array.from({length:size},(_,i)=>startStr+i);
+      for(const seq of assigns){
+        const pcsOrdered=seq.map(t=>(root+iv[t])%12);
+        for(let base=0;base<=FRETS;base++){
+          const fr=[];let ok=true;
+          for(let i=0;i<size;i++){
+            const open=OPEN[strs[i]];let f=null;
+            for(let x=base;x<=base+MAX_STRETCH&&x<=FRETS;x++){if((open+x)%12===pcsOrdered[i]){f=x;break;}}
+            if(f===null){ok=false;break;} fr.push(f);
+          }
+          if(!ok||!shapeFeasible(fr))continue;
+          const avg=fr.reduce((a,b)=>a+b,0)/fr.length;
+          const rootOnBass=(open0=>((open0+fr[0])%12)===root)(OPEN[strs[0]]);
+          if(!best||avg<best.avg-0.26||
+             (avg<best.avg+0.26&&(strs.length>best.strs.length||(strs.length===best.strs.length&&rootOnBass&&!best.rootOnBass)))){
+            best={strs,frets:fr,avg,rootOnBass};
+          }
+        }
+      }
     }
   }
   return best;
