@@ -1,0 +1,252 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Analizador de Canciones</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,600;9..144,700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg:#161A24; --surface:#222836; --surface2:#2C3346; --line:#3A4258;
+  --brass:#C9A227; --brass-soft:#E4C766; --teal:#4FA8A0; --teal-soft:#7BC8C1;
+  --ivory:#EDE6D6; --red:#C1584B; --muted:#8B92A8;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--ivory);font-family:'Inter',sans-serif;min-height:100vh}
+.wrap{max-width:760px;margin:0 auto;padding:40px 24px 70px}
+h1{font-family:'Fraunces',serif;font-size:30px;color:var(--brass-soft);font-weight:700}
+.sub{color:var(--muted);font-size:14px;margin-top:6px;line-height:1.5}
+.card{background:var(--surface);border:1px solid var(--line);border-radius:14px;padding:22px;margin-top:22px}
+h2{font-family:'Fraunces',serif;font-size:19px;color:var(--brass-soft);margin-bottom:10px}
+p{font-size:14px;line-height:1.55}
+.muted{color:var(--muted)}
+.controls{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin:14px 0}
+button{font-family:'Inter',sans-serif;cursor:pointer;border:none;border-radius:8px;font-size:14px;padding:10px 16px}
+button:disabled{opacity:.35;cursor:not-allowed}
+.btn{background:var(--surface2);color:var(--teal)}
+.btn-gold{background:var(--brass);color:var(--bg);font-weight:600}
+input[type=file]{display:none}
+label.filepick{background:var(--surface2);color:var(--ivory);border:1px solid var(--line);border-radius:8px;padding:10px 16px;font-size:14px;cursor:pointer;display:inline-block}
+label.filepick:hover{border-color:var(--brass)}
+.status{font-size:13px;color:var(--teal-soft);min-height:18px;margin-top:8px}
+.status.err{color:var(--red)}
+#result{margin-top:16px}
+.keyline{font-family:'Fraunces',serif;font-size:26px;color:var(--brass-soft);font-weight:700}
+.keysub{color:var(--muted);font-size:13px;margin-top:4px}
+.chroma{display:flex;gap:6px;align-items:flex-end;height:120px;margin-top:20px}
+.chroma .bar{flex:1;background:var(--surface2);border-radius:4px 4px 0 0;position:relative;display:flex;align-items:flex-end;justify-content:center}
+.chroma .bar .fill{width:100%;background:var(--teal);border-radius:4px 4px 0 0;transition:height .3s}
+.chroma .bar .fill.root{background:var(--brass)}
+.chroma .lbl{font-size:11px;color:var(--muted);text-align:center;margin-top:6px}
+.chromawrap{display:flex;gap:6px}
+.chromacol{flex:1;display:flex;flex-direction:column;align-items:center}
+.soon{border:1px dashed var(--line);border-radius:10px;padding:14px;margin-top:16px;font-size:13px;color:var(--muted)}
+a{color:var(--teal-soft)}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>🎧 Analizador de Canciones</h1>
+    <p class="sub">Sube un audio (o graba con el micrófono) y estima la tonalidad a partir del contenido armónico real — todo el análisis corre en tu navegador, no se sube a ningún sitio.</p>
+  </header>
+
+  <div class="card">
+    <h2>Analizar</h2>
+    <div class="controls">
+      <label class="filepick" for="fileInput">📁 Elegir archivo de audio</label>
+      <input type="file" id="fileInput" accept="audio/*">
+      <button class="btn" id="btnMic">🎙️ Grabar con micrófono (10s)</button>
+    </div>
+    <p class="status" id="status"></p>
+    <div id="result" hidden>
+      <div class="keyline" id="keyLine"></div>
+      <div class="keysub" id="keySub"></div>
+      <div class="chromawrap" id="chromaWrap"></div>
+    </div>
+  </div>
+
+  <div class="soon">
+    💡 <b>Próximamente:</b> detección de acordes por segmentos (no solo la tonalidad global) y extracción de tablatura automática, reutilizando el motor de digitaciones de <a href="https://github.com/Heiviel/Teoria-guitarristica" target="_blank">Teoría Visual</a>.
+  </div>
+</div>
+
+<script>
+const NN=["Do","Do#","Re","Re#","Mi","Fa","Fa#","Sol","Sol#","La","La#","Si"];
+/* Perfiles de Krumhansl-Kessler (empíricos, 1990): cuánto "encaja" cada grado cromático
+   con una tonalidad mayor/menor cuya tónica es el índice 0 del array. */
+const KK_MAJOR=[6.35,2.23,3.48,2.33,4.38,4.09,2.52,5.19,2.39,3.66,2.29,2.88];
+const KK_MINOR=[6.33,2.68,3.52,5.38,2.60,3.53,2.54,4.75,3.98,2.69,3.34,3.17];
+
+function setStatus(msg,isErr){
+  const s=document.getElementById("status");
+  s.textContent=msg||"";
+  s.className="status"+(isErr?" err":"");
+}
+
+/* FFT radix-2 iterativo (Cooley-Tukey) sobre arrays de números reales e imaginarios del mismo
+   tamaño (potencia de 2), in-place. Suficiente para extraer croma sin depender de librerías. */
+function fft(re,im){
+  const n=re.length;
+  for(let i=1,j=0;i<n;i++){
+    let bit=n>>1;
+    for(;j&bit;bit>>=1)j^=bit;
+    j^=bit;
+    if(i<j){[re[i],re[j]]=[re[j],re[i]];[im[i],im[j]]=[im[j],im[i]];}
+  }
+  for(let len=2;len<=n;len<<=1){
+    const ang=-2*Math.PI/len;
+    const wr=Math.cos(ang), wi=Math.sin(ang);
+    for(let i=0;i<n;i+=len){
+      let cwr=1, cwi=0;
+      for(let k=0;k<len/2;k++){
+        const ur=re[i+k], ui=im[i+k];
+        const vr=re[i+k+len/2]*cwr-im[i+k+len/2]*cwi;
+        const vi=re[i+k+len/2]*cwi+im[i+k+len/2]*cwr;
+        re[i+k]=ur+vr; im[i+k]=ui+vi;
+        re[i+k+len/2]=ur-vr; im[i+k+len/2]=ui-vi;
+        const nwr=cwr*wr-cwi*wi, nwi=cwr*wi+cwi*wr;
+        cwr=nwr; cwi=nwi;
+      }
+    }
+  }
+}
+
+/* Croma global de un AudioBuffer: ventanas de análisis con Hann, FFT, y se acumula la energía
+   de cada bin en su clase de altura (pc = nota sin octava) ponderada por magnitud. */
+function computeChroma(audioBuffer){
+  const sr=audioBuffer.sampleRate;
+  const ch0=audioBuffer.getChannelData(0);
+  let mono=ch0;
+  if(audioBuffer.numberOfChannels>1){
+    const ch1=audioBuffer.getChannelData(1);
+    mono=new Float32Array(ch0.length);
+    for(let i=0;i<ch0.length;i++)mono[i]=(ch0[i]+ch1[i])/2;
+  }
+  const N=4096, hop=2048;
+  const hann=new Float32Array(N);
+  for(let i=0;i<N;i++)hann[i]=0.5-0.5*Math.cos(2*Math.PI*i/(N-1));
+  const chroma=new Float32Array(12);
+  const minBin=Math.max(1,Math.floor(60*N/sr));   // ignora graves por debajo de ~60Hz (ruido/DC)
+  const maxBin=Math.min(N/2,Math.ceil(5000*N/sr)); // y agudos por encima de ~5kHz (poco armónicamente relevante)
+  let windows=0;
+  for(let start=0;start+N<=mono.length;start+=hop){
+    const re=new Float32Array(N), im=new Float32Array(N);
+    for(let i=0;i<N;i++)re[i]=mono[start+i]*hann[i];
+    fft(re,im);
+    for(let bin=minBin;bin<maxBin;bin++){
+      const mag=Math.hypot(re[bin],im[bin]);
+      if(mag<1e-6)continue;
+      const freq=bin*sr/N;
+      const midi=69+12*Math.log2(freq/440);
+      const pc=((Math.round(midi)%12)+12)%12;
+      chroma[pc]+=mag;
+    }
+    windows++;
+  }
+  if(windows===0)throw new Error("Audio demasiado corto para analizar.");
+  const max=Math.max(...chroma)||1;
+  for(let i=0;i<12;i++)chroma[i]/=max;
+  return chroma;
+}
+
+function pearson(a,b){
+  const n=a.length;
+  const ma=a.reduce((s,x)=>s+x,0)/n, mb=b.reduce((s,x)=>s+x,0)/n;
+  let num=0,da=0,db=0;
+  for(let i=0;i<n;i++){const xa=a[i]-ma,xb=b[i]-mb;num+=xa*xb;da+=xa*xa;db+=xb*xb;}
+  return num/(Math.sqrt(da*db)||1);
+}
+function rotate(arr,k){const n=arr.length;return Array.from({length:n},(_,i)=>arr[(i-k+n*10)%n]);}
+
+/* Algoritmo de Krumhansl-Schmuckler: correla el croma observado contra los 24 perfiles posibles
+   (12 tónicas x mayor/menor) y se queda con la correlación más alta. */
+function estimateKey(chroma){
+  let best=null;
+  for(let root=0;root<12;root++){
+    const cMaj=pearson(chroma,rotate(KK_MAJOR,root));
+    const cMin=pearson(chroma,rotate(KK_MINOR,root));
+    if(!best||cMaj>best.corr)best={root,mode:"major",corr:cMaj};
+    if(!best||cMin>best.corr)best={root,mode:"minor",corr:cMin};
+  }
+  return best;
+}
+
+function renderResult(chroma,key){
+  document.getElementById("result").hidden=false;
+  const rootName=NN[key.root];
+  const modeName=key.mode==="major"?"Mayor":"menor";
+  document.getElementById("keyLine").textContent=`${rootName} ${modeName}`;
+  const relPc=key.mode==="major"?(key.root+9)%12:(key.root+3)%12;
+  const relLabel=key.mode==="major"?`relativo menor: ${NN[relPc]} menor`:`relativo mayor: ${NN[relPc]} Mayor`;
+  document.getElementById("keySub").textContent=
+    `Confianza (correlación de Krumhansl-Schmuckler): ${(key.corr*100).toFixed(0)}% · ${relLabel}`;
+  const wrap=document.getElementById("chromaWrap");wrap.innerHTML="";
+  chroma.forEach((v,i)=>{
+    const col=document.createElement("div");col.className="chromacol";
+    const bar=document.createElement("div");bar.className="chroma";bar.style.height="120px";bar.style.width="100%";
+    const fill=document.createElement("div");fill.className="fill"+(i===key.root?" root":"");
+    fill.style.height=Math.max(2,v*100)+"%";fill.style.width="100%";
+    bar.appendChild(fill);
+    const lbl=document.createElement("div");lbl.className="lbl";lbl.textContent=NN[i];
+    col.appendChild(bar);col.appendChild(lbl);
+    wrap.appendChild(col);
+  });
+}
+
+async function analyzeArrayBuffer(arrBuf){
+  setStatus("Decodificando audio…");
+  const ctx=new (window.AudioContext||window.webkitAudioContext)();
+  const audioBuffer=await ctx.decodeAudioData(arrBuf);
+  setStatus("Analizando contenido armónico…");
+  await new Promise(r=>setTimeout(r,0)); // deja pintar el status antes del trabajo pesado
+  const chroma=computeChroma(audioBuffer);
+  const key=estimateKey(chroma);
+  renderResult(chroma,key);
+  setStatus("Listo.");
+}
+
+document.getElementById("fileInput").addEventListener("change",async e=>{
+  const file=e.target.files[0];
+  if(!file)return;
+  document.getElementById("result").hidden=true;
+  try{
+    const buf=await file.arrayBuffer();
+    await analyzeArrayBuffer(buf);
+  }catch(err){
+    console.error(err);
+    setStatus("No se pudo analizar el archivo: "+err.message,true);
+  }
+});
+
+document.getElementById("btnMic").addEventListener("click",async()=>{
+  document.getElementById("result").hidden=true;
+  try{
+    setStatus("Pidiendo permiso al micrófono…");
+    const stream=await navigator.mediaDevices.getUserMedia({audio:true});
+    const chunks=[];
+    const rec=new MediaRecorder(stream);
+    rec.ondataavailable=e=>chunks.push(e.data);
+    rec.onstop=async()=>{
+      stream.getTracks().forEach(t=>t.stop());
+      try{
+        const blob=new Blob(chunks);
+        const buf=await blob.arrayBuffer();
+        await analyzeArrayBuffer(buf);
+      }catch(err){
+        console.error(err);
+        setStatus("No se pudo analizar la grabación: "+err.message,true);
+      }
+    };
+    rec.start();
+    setStatus("🔴 Grabando 10 segundos…");
+    setTimeout(()=>rec.stop(),10000);
+  }catch(err){
+    console.error(err);
+    setStatus("No se pudo acceder al micrófono: "+err.message,true);
+  }
+});
+</script>
+</body>
+</html>
