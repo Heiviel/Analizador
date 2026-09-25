@@ -58,6 +58,7 @@ a{color:var(--teal-soft)}
 
 /* layout responsivo: una columna en movil, dos en tablet/desktop para aprovechar el ancho */
 .resultsgrid{display:grid;grid-template-columns:1fr;gap:22px;margin-top:22px}
+.resultsgrid[hidden]{display:none}
 @media(min-width:860px){.resultsgrid{grid-template-columns:minmax(0,1fr) minmax(300px,380px);align-items:stretch}}
 .resultsgrid .card{margin-top:0}
 .fbcard{position:sticky;top:16px;display:flex;flex-direction:column}
@@ -122,6 +123,12 @@ a{color:var(--teal-soft)}
 </div>
 
 <script>
+/* Sin esto, en iOS/iPad Safari el primer toque sobre un elemento con :hover (como .chordrow) solo
+   activa el estado hover y el clic real no llega hasta un segundo toque — el usuario ve que "no
+   pasa nada" (ni suena el acorde ni salta la canción) hasta tocar dos veces. Mismo arreglo que en
+   Teoría Visual: un listener vacío de touchstart hace que los toques se traten como clic inmediato. */
+document.addEventListener("touchstart",function(){},{passive:true});
+
 const NN=["Do","Do#","Re","Re#","Mi","Fa","Fa#","Sol","Sol#","La","La#","Si"];
 /* Perfiles de Krumhansl-Kessler (empíricos, 1990): cuánto "encaja" cada grado cromático
    con una tonalidad mayor/menor cuya tónica es el índice 0 del array. */
