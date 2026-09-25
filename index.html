@@ -14,7 +14,7 @@
 }
 *{box-sizing:border-box;margin:0;padding:0}
 body{background:var(--bg);color:var(--ivory);font-family:'Inter',sans-serif;min-height:100vh}
-.wrap{max-width:760px;margin:0 auto;padding:40px 24px 70px}
+.wrap{max-width:1200px;margin:0 auto;padding:32px 20px 70px}
 h1{font-family:'Fraunces',serif;font-size:30px;color:var(--brass-soft);font-weight:700}
 .sub{color:var(--muted);font-size:14px;margin-top:6px;line-height:1.5}
 .card{background:var(--surface);border:1px solid var(--line);border-radius:14px;padding:22px;margin-top:22px}
@@ -42,11 +42,30 @@ label.filepick:hover{border-color:var(--brass)}
 .chromalbl{font-size:10px;color:var(--muted);text-align:center;margin-top:6px;overflow:hidden;white-space:nowrap;max-width:100%}
 .soon{border:1px dashed var(--line);border-radius:10px;padding:14px;margin-top:16px;font-size:13px;color:var(--muted)}
 a{color:var(--teal-soft)}
-.chordlist{display:flex;flex-direction:column;gap:2px;max-height:340px;overflow-y:auto;margin-top:8px}
-.chordrow{display:flex;gap:14px;align-items:baseline;padding:7px 10px;border-radius:6px;font-size:14px}
+.chordlist{display:flex;flex-direction:column;gap:2px;max-height:420px;overflow-y:auto;margin-top:8px}
+.chordrow{display:flex;gap:14px;align-items:baseline;padding:8px 10px;border-radius:6px;font-size:14px;cursor:pointer;border:1px solid transparent;background:none}
 .chordrow:nth-child(odd){background:var(--surface2)}
+.chordrow:hover{border-color:var(--line)}
+.chordrow.selected{border-color:var(--brass)}
+.chordrow.playing{background:var(--teal);color:var(--bg)}
+.chordrow.playing .chordtime{color:var(--bg);opacity:.7}
 .chordtime{color:var(--muted);font-size:12px;font-variant-numeric:tabular-nums;min-width:88px}
 .chordname{font-weight:600;color:var(--ivory)}
+.chordrow.playing .chordname{color:var(--bg)}
+
+/* player */
+.player{width:100%;margin-top:14px;height:38px}
+
+/* layout responsivo: una columna en movil, dos en tablet/desktop para aprovechar el ancho */
+.resultsgrid{display:grid;grid-template-columns:1fr;gap:22px;margin-top:22px}
+@media(min-width:860px){.resultsgrid{grid-template-columns:minmax(0,1fr) minmax(300px,380px);align-items:start}}
+.resultsgrid .card{margin-top:0}
+.fbcard{position:sticky;top:16px}
+.fbcard .placeholder{font-size:13px;color:var(--muted);text-align:center;padding:30px 10px}
+
+/* diagrama de acorde (caja vertical estilo cancionero) */
+.chordbox-title{font-family:'Fraunces',serif;font-size:20px;color:var(--brass-soft);margin-bottom:10px;text-align:center}
+.chordbox-svg{display:block;margin:0 auto;max-width:220px}
 </style>
 </head>
 <body>
@@ -62,23 +81,32 @@ a{color:var(--teal-soft)}
       <label class="filepick" for="fileInput">📁 Elegir archivo de audio</label>
       <input type="file" id="fileInput" accept="audio/*">
       <button class="btn" id="btnMic">🎙️ Grabar con micrófono (10s)</button>
+      <button class="btn" id="btnTab" hidden>🖥️ Capturar pestaña (10s)</button>
     </div>
     <p class="status" id="status"></p>
     <div id="result" hidden>
       <div class="keyline" id="keyLine"></div>
       <div class="keysub" id="keySub"></div>
       <div class="chromawrap" id="chromaWrap"></div>
+      <audio class="player" id="player" controls></audio>
     </div>
   </div>
 
-  <div class="card" id="chordCard" hidden>
-    <h2>Progresión de acordes</h2>
-    <p class="muted" style="font-size:12px">Aproximada: compara qué notas suenan más fuerte cada 1,5s contra plantillas de acorde — no detecta el ritmo real de cambio, así que un cambio de acorde a destiempo puede partirse o fundirse con el siguiente tramo.</p>
-    <div class="chordlist" id="chordList"></div>
+  <div class="resultsgrid" id="resultsGrid" hidden>
+    <div class="card" id="chordCard">
+      <h2>Progresión de acordes</h2>
+      <p class="muted" style="font-size:12px">Aproximada: compara qué notas suenan más fuerte cada 1,5s contra plantillas de acorde — no detecta el ritmo real de cambio, así que un cambio de acorde a destiempo puede partirse o fundirse con el siguiente tramo. Reproduce la canción para ver el acorde actual iluminado, o toca uno de la lista para verlo en el diapasón.</p>
+      <div class="chordlist" id="chordList"></div>
+    </div>
+    <div class="card fbcard">
+      <h2>Diapasón</h2>
+      <div class="chordbox-title" id="fbTitle"></div>
+      <div id="fbBox"><p class="placeholder">Toca un acorde de la lista para ver cómo se toca.</p></div>
+    </div>
   </div>
 
   <div class="soon">
-    💡 <b>Próximamente:</b> extracción de tablatura automática a partir de los acordes detectados, reutilizando el motor de digitaciones de <a href="https://github.com/Heiviel/Teoria-guitarristica" target="_blank">Teoría Visual</a>. Separar instrumentos (guitarra/bajo/voz) queda fuera de alcance por ahora — necesitaría modelos de IA entrenados, no solo DSP.
+    💡 <b>Próximamente:</b> extracción de tablatura completa (no solo acordes sueltos). Separar instrumentos (guitarra/bajo/voz) queda fuera de alcance por ahora — necesitaría modelos de IA entrenados, no solo DSP.
   </div>
 </div>
 
@@ -254,6 +282,89 @@ function segmentChords(frames,duration,segLen){
 }
 function fmtTime(t){const m=Math.floor(t/60),s=Math.floor(t%60);return `${m}:${String(s).padStart(2,"0")}`;}
 
+/* ===== Diapasón: misma búsqueda de digitación que en Teoría Visual (findShapeN), reimplementada
+   aquí compacta porque este proyecto vive en su propio repo. Afinación estándar de guitarra. */
+const OPEN=[40,45,50,55,59,64]; // Mi2 La2 Re3 Sol3 Si3 Mi4
+const FRETS=15;
+function findShapeN(strIdxs,pcsOrdered,spanMax,startBase){
+  spanMax=spanMax||4;startBase=startBase||0;
+  for(let base=startBase;base<=FRETS;base++){
+    const fr=[];let ok=true;
+    for(let i=0;i<strIdxs.length;i++){
+      const open=OPEN[strIdxs[i]];let f=null;
+      for(let x=base;x<=base+spanMax&&x<=FRETS;x++){if((open+x)%12===pcsOrdered[i]){f=x;break;}}
+      if(f===null){ok=false;break;} fr.push(f);
+    }
+    if(ok)return fr;
+  } return null;
+}
+/* Prueba todas las ventanas de cuerdas contiguas que quepan el nº de notas del acorde y se queda
+   con la de traste medio más bajo (posición más cómoda/grave). */
+function findChordShape(root,iv){
+  let best=null;
+  for(let startStr=0;startStr<=OPEN.length-iv.length;startStr++){
+    const strs=Array.from({length:iv.length},(_,i)=>startStr+i);
+    const pcsOrdered=iv.map(x=>(root+x)%12);
+    const fr=findShapeN(strs,pcsOrdered,4,0);
+    if(fr){
+      const avg=fr.reduce((a,b)=>a+b,0)/fr.length;
+      if(!best||avg<best.avg)best={strs,frets:fr,avg};
+    }
+  }
+  return best;
+}
+/* Diagrama vertical estilo cancionero: 6 cuerdas verticales, trastes horizontales, cuerdas fuera
+   de la forma marcadas con ✕ (no se tocan). */
+function chordBoxSvg(root,quality){
+  const shape=findChordShape(root,quality.iv);
+  if(!shape)return `<p class="placeholder">No se encontró una digitación cómoda para este acorde.</p>`;
+  const allFrets=shape.frets;
+  const minF=Math.min(...allFrets), maxF=Math.max(...allFrets);
+  const startFret=minF===0?0:minF;
+  const nFrets=Math.max(4,maxF-startFret+1);
+  const W=180,H=40+nFrets*38,padL=26,padR=14,padT=34;
+  const nStr=OPEN.length;
+  const xFor=s=>padL+(s/(nStr-1))*(W-padL-padR);
+  const yFor=f=>padT+(f-startFret)*38;
+  let svg=`<svg class="chordbox-svg" viewBox="0 0 ${W} ${H}" xmlns="http://www.w3.org/2000/svg">`;
+  // nut o indicador de traste inicial
+  if(startFret===0){
+    svg+=`<rect x="${xFor(0)-1.5}" y="${padT-4}" width="${xFor(nStr-1)-xFor(0)+3}" height="5" fill="#EDE6D6"/>`;
+  } else {
+    svg+=`<text x="${xFor(0)-14}" y="${padT+6}" font-size="11" fill="#8B92A8">${startFret}</text>`;
+  }
+  // trastes
+  for(let f=0;f<=nFrets;f++){
+    const y=padT+f*38;
+    svg+=`<line x1="${xFor(0)}" y1="${y}" x2="${xFor(nStr-1)}" y2="${y}" stroke="#3A4258" stroke-width="1"/>`;
+  }
+  // cuerdas
+  for(let s=0;s<nStr;s++){
+    svg+=`<line x1="${xFor(s)}" y1="${padT}" x2="${xFor(s)}" y2="${padT+nFrets*38}" stroke="#3A4258" stroke-width="1.5"/>`;
+  }
+  // marcas por cuerda: ✕ si no forma parte de la digitación encontrada, punto si sí
+  for(let s=0;s<nStr;s++){
+    const idx=shape.strs.indexOf(s);
+    if(idx<0){
+      svg+=`<text x="${xFor(s)}" y="${padT-12}" font-size="13" fill="#C1584B" text-anchor="middle" font-weight="700">✕</text>`;
+      continue;
+    }
+    const fret=shape.frets[idx];
+    const pc=(OPEN[s]+fret)%12;
+    const isRoot=pc===root;
+    const cy=fret===0?padT-14:yFor(fret)-19;
+    const label=NN[pc].replace("#","♯");
+    svg+=`<circle cx="${xFor(s)}" cy="${cy}" r="11" fill="${isRoot?"#C9A227":"#4FA8A0"}" stroke="${isRoot?"#fff":"none"}" stroke-width="2"/>`;
+    svg+=`<text x="${xFor(s)}" y="${cy+3.5}" font-size="8.5" fill="#161A24" text-anchor="middle" font-weight="700">${label}</text>`;
+  }
+  svg+=`</svg>`;
+  return svg;
+}
+function showChordBox(root,quality){
+  document.getElementById("fbTitle").textContent=`${NN[root]} ${quality.name}`;
+  document.getElementById("fbBox").innerHTML=chordBoxSvg(root,quality);
+}
+
 function renderResult(chroma,key){
   document.getElementById("result").hidden=false;
   const rootName=NN[key.root];
@@ -276,11 +387,15 @@ function renderResult(chroma,key){
   });
 }
 
+let currentSegments=[];
+let selectedSegIdx=null;
 function renderChords(segments){
+  currentSegments=segments;
+  selectedSegIdx=null;
   const wrap=document.getElementById("chordList");
   wrap.innerHTML="";
-  segments.forEach(s=>{
-    const row=document.createElement("div");row.className="chordrow";
+  segments.forEach((s,i)=>{
+    const row=document.createElement("div");row.className="chordrow";row.dataset.idx=i;
     const time=document.createElement("span");time.className="chordtime";
     time.textContent=`${fmtTime(s.t0)}–${fmtTime(s.t1)}`;
     const name=document.createElement("span");name.className="chordname";
@@ -288,13 +403,47 @@ function renderChords(segments){
     row.appendChild(time);row.appendChild(name);
     wrap.appendChild(row);
   });
-  document.getElementById("chordCard").hidden=false;
+  document.getElementById("resultsGrid").hidden=false;
+  if(segments.length){selectedSegIdx=0;showChordBox(segments[0].root,segments[0].quality);}
+  updateChordRowClasses();
 }
+function updateChordRowClasses(playingIdx){
+  document.querySelectorAll(".chordrow").forEach(row=>{
+    const i=+row.dataset.idx;
+    row.classList.toggle("selected",i===selectedSegIdx);
+    row.classList.toggle("playing",i===playingIdx);
+  });
+}
+document.getElementById("chordList").addEventListener("click",e=>{
+  const row=e.target.closest(".chordrow");
+  if(!row)return;
+  const i=+row.dataset.idx;
+  selectedSegIdx=i;
+  const s=currentSegments[i];
+  showChordBox(s.root,s.quality);
+  if(player.src)player.currentTime=s.t0;
+  updateChordRowClasses(player.paused?undefined:findSegIdxAtTime(player.currentTime));
+});
+function findSegIdxAtTime(t){
+  return currentSegments.findIndex(s=>t>=s.t0&&t<s.t1);
+}
+const player=document.getElementById("player");
+player.addEventListener("timeupdate",()=>{
+  if(!currentSegments.length)return;
+  const idx=findSegIdxAtTime(player.currentTime);
+  if(idx<0)return;
+  updateChordRowClasses(idx);
+  const row=document.querySelector(`.chordrow[data-idx="${idx}"]`);
+  if(row)row.scrollIntoView({block:"nearest",behavior:"smooth"});
+});
+player.addEventListener("pause",()=>updateChordRowClasses());
+player.addEventListener("ended",()=>updateChordRowClasses());
 
-async function analyzeArrayBuffer(arrBuf){
+async function analyzeBlob(blob){
   setStatus("Decodificando audio…");
+  const buf=await blob.arrayBuffer();
   const ctx=new (window.AudioContext||window.webkitAudioContext)();
-  const audioBuffer=await ctx.decodeAudioData(arrBuf);
+  const audioBuffer=await ctx.decodeAudioData(buf);
   setStatus("Analizando contenido armónico…");
   await new Promise(r=>setTimeout(r,0)); // deja pintar el status antes del trabajo pesado
   const {frames,duration,globalChroma}=computeChromaFrames(audioBuffer);
@@ -302,17 +451,21 @@ async function analyzeArrayBuffer(arrBuf){
   renderResult(globalChroma,key);
   const segments=segmentChords(frames,duration,1.5);
   renderChords(segments);
+  if(player.src)URL.revokeObjectURL(player.src);
+  player.src=URL.createObjectURL(blob);
   setStatus("Listo.");
+}
+function resetUI(){
+  document.getElementById("result").hidden=true;
+  document.getElementById("resultsGrid").hidden=true;
 }
 
 document.getElementById("fileInput").addEventListener("change",async e=>{
   const file=e.target.files[0];
   if(!file)return;
-  document.getElementById("result").hidden=true;
-  document.getElementById("chordCard").hidden=true;
+  resetUI();
   try{
-    const buf=await file.arrayBuffer();
-    await analyzeArrayBuffer(buf);
+    await analyzeBlob(file);
   }catch(err){
     console.error(err);
     setStatus("No se pudo analizar el archivo: "+err.message,true);
@@ -320,8 +473,7 @@ document.getElementById("fileInput").addEventListener("change",async e=>{
 });
 
 document.getElementById("btnMic").addEventListener("click",async()=>{
-  document.getElementById("result").hidden=true;
-  document.getElementById("chordCard").hidden=true;
+  resetUI();
   try{
     setStatus("Pidiendo permiso al micrófono…");
     const stream=await navigator.mediaDevices.getUserMedia({audio:true});
@@ -331,9 +483,7 @@ document.getElementById("btnMic").addEventListener("click",async()=>{
     rec.onstop=async()=>{
       stream.getTracks().forEach(t=>t.stop());
       try{
-        const blob=new Blob(chunks);
-        const buf=await blob.arrayBuffer();
-        await analyzeArrayBuffer(buf);
+        await analyzeBlob(new Blob(chunks));
       }catch(err){
         console.error(err);
         setStatus("No se pudo analizar la grabación: "+err.message,true);
@@ -345,6 +495,45 @@ document.getElementById("btnMic").addEventListener("click",async()=>{
   }catch(err){
     console.error(err);
     setStatus("No se pudo acceder al micrófono: "+err.message,true);
+  }
+});
+
+/* Captura de audio de una pestaña (YouTube, Spotify Web Player...): solo existe en navegadores
+   de escritorio basados en Chromium/Firefox — en Android no hay getDisplayMedia, así que el botón
+   se queda oculto ahí en vez de mostrar algo que falla siempre. */
+const btnTab=document.getElementById("btnTab");
+if(navigator.mediaDevices&&navigator.mediaDevices.getDisplayMedia)btnTab.hidden=false;
+btnTab.addEventListener("click",async()=>{
+  resetUI();
+  try{
+    setStatus("Elige la pestaña donde suena la canción y marca \"Compartir audio de la pestaña\"…");
+    const stream=await navigator.mediaDevices.getDisplayMedia({video:true,audio:true});
+    if(!stream.getAudioTracks().length){
+      stream.getTracks().forEach(t=>t.stop());
+      setStatus("No se compartió audio — vuelve a intentarlo y marca la casilla de audio de la pestaña.",true);
+      return;
+    }
+    const audioOnly=new MediaStream(stream.getAudioTracks());
+    const chunks=[];
+    const rec=new MediaRecorder(audioOnly);
+    rec.ondataavailable=e=>chunks.push(e.data);
+    rec.onstop=async()=>{
+      stream.getTracks().forEach(t=>t.stop());
+      try{
+        await analyzeBlob(new Blob(chunks));
+      }catch(err){
+        console.error(err);
+        setStatus("No se pudo analizar la captura: "+err.message,true);
+      }
+    };
+    rec.start();
+    setStatus("🔴 Capturando 10 segundos de la pestaña compartida…");
+    setTimeout(()=>rec.stop(),10000);
+    // si el usuario para de compartir manualmente antes de tiempo, cerramos igual
+    stream.getVideoTracks()[0].addEventListener("ended",()=>{if(rec.state==="recording")rec.stop();});
+  }catch(err){
+    console.error(err);
+    setStatus("No se pudo capturar la pestaña: "+err.message,true);
   }
 });
 </script>
