@@ -43,6 +43,11 @@ label.filepick:hover{border-color:var(--brass)}
 .chromacol{flex:1;display:flex;flex-direction:column;align-items:center}
 .soon{border:1px dashed var(--line);border-radius:10px;padding:14px;margin-top:16px;font-size:13px;color:var(--muted)}
 a{color:var(--teal-soft)}
+.chordlist{display:flex;flex-direction:column;gap:2px;max-height:340px;overflow-y:auto;margin-top:8px}
+.chordrow{display:flex;gap:14px;align-items:baseline;padding:7px 10px;border-radius:6px;font-size:14px}
+.chordrow:nth-child(odd){background:var(--surface2)}
+.chordtime{color:var(--muted);font-size:12px;font-variant-numeric:tabular-nums;min-width:88px}
+.chordname{font-weight:600;color:var(--ivory)}
 </style>
 </head>
 <body>
@@ -67,8 +72,14 @@ a{color:var(--teal-soft)}
     </div>
   </div>
 
+  <div class="card" id="chordCard" hidden>
+    <h2>Progresión de acordes</h2>
+    <p class="muted" style="font-size:12px">Aproximada: compara qué notas suenan más fuerte cada 1,5s contra plantillas de acorde — no detecta el ritmo real de cambio, así que un cambio de acorde a destiempo puede partirse o fundirse con el siguiente tramo.</p>
+    <div class="chordlist" id="chordList"></div>
+  </div>
+
   <div class="soon">
-    💡 <b>Próximamente:</b> detección de acordes por segmentos (no solo la tonalidad global) y extracción de tablatura automática, reutilizando el motor de digitaciones de <a href="https://github.com/Heiviel/Teoria-guitarristica" target="_blank">Teoría Visual</a>.
+    💡 <b>Próximamente:</b> extracción de tablatura automática a partir de los acordes detectados, reutilizando el motor de digitaciones de <a href="https://github.com/Heiviel/Teoria-guitarristica" target="_blank">Teoría Visual</a>. Separar instrumentos (guitarra/bajo/voz) queda fuera de alcance por ahora — necesitaría modelos de IA entrenados, no solo DSP.
   </div>
 </div>
 
@@ -113,9 +124,11 @@ function fft(re,im){
   }
 }
 
-/* Croma global de un AudioBuffer: ventanas de análisis con Hann, FFT, y se acumula la energía
-   de cada bin en su clase de altura (pc = nota sin octava) ponderada por magnitud. */
-function computeChroma(audioBuffer){
+/* Croma por ventanas de un AudioBuffer: FFT con Hann sobre ventanas solapadas, y se acumula la
+   energía de cada bin en su clase de altura (pc = nota sin octava) ponderada por magnitud.
+   Devuelve un croma por ventana (para acordes por segmento) además del croma global normalizado
+   (para la tonalidad de toda la pista). */
+function computeChromaFrames(audioBuffer){
   const sr=audioBuffer.sampleRate;
   const ch0=audioBuffer.getChannelData(0);
   let mono=ch0;
@@ -127,14 +140,15 @@ function computeChroma(audioBuffer){
   const N=4096, hop=2048;
   const hann=new Float32Array(N);
   for(let i=0;i<N;i++)hann[i]=0.5-0.5*Math.cos(2*Math.PI*i/(N-1));
-  const chroma=new Float32Array(12);
   const minBin=Math.max(1,Math.floor(60*N/sr));   // ignora graves por debajo de ~60Hz (ruido/DC)
   const maxBin=Math.min(N/2,Math.ceil(5000*N/sr)); // y agudos por encima de ~5kHz (poco armónicamente relevante)
-  let windows=0;
+  const frames=[]; // {t, chroma:Float32Array(12)}
+  const global=new Float32Array(12);
   for(let start=0;start+N<=mono.length;start+=hop){
     const re=new Float32Array(N), im=new Float32Array(N);
     for(let i=0;i<N;i++)re[i]=mono[start+i]*hann[i];
     fft(re,im);
+    const chroma=new Float32Array(12);
     for(let bin=minBin;bin<maxBin;bin++){
       const mag=Math.hypot(re[bin],im[bin]);
       if(mag<1e-6)continue;
@@ -142,13 +156,14 @@ function computeChroma(audioBuffer){
       const midi=69+12*Math.log2(freq/440);
       const pc=((Math.round(midi)%12)+12)%12;
       chroma[pc]+=mag;
+      global[pc]+=mag;
     }
-    windows++;
+    frames.push({t:start/sr,chroma});
   }
-  if(windows===0)throw new Error("Audio demasiado corto para analizar.");
-  const max=Math.max(...chroma)||1;
-  for(let i=0;i<12;i++)chroma[i]/=max;
-  return chroma;
+  if(!frames.length)throw new Error("Audio demasiado corto para analizar.");
+  const max=Math.max(...global)||1;
+  const globalNorm=Array.from(global,v=>v/max);
+  return {frames,duration:mono.length/sr,globalChroma:globalNorm};
 }
 
 function pearson(a,b){
@@ -173,6 +188,73 @@ function estimateKey(chroma){
   return best;
 }
 
+/* ===== Acordes por segmento (template matching sobre croma, estilo Fujishima 1999) =====
+   Cada acorde se representa como un vector binario de 12 posiciones (1 = nota que suena en ese
+   acorde). Se compara el croma observado de cada segmento contra las 12 rotaciones de cada
+   plantilla con similitud coseno, y se elige la que mejor encaja. Es una aproximación clásica de
+   reconocimiento de acordes por audio — no lee partitura, solo "qué notas suenan más fuerte aquí". */
+const CHORD_QUALITIES=[
+ {q:"maj",iv:[0,4,7],name:"Mayor"},
+ {q:"min",iv:[0,3,7],name:"menor"},
+ {q:"dim",iv:[0,3,6],name:"disminuido"},
+ {q:"aug",iv:[0,4,8],name:"aumentado"},
+ {q:"sus2",iv:[0,2,7],name:"sus2"},
+ {q:"sus4",iv:[0,5,7],name:"sus4"},
+ {q:"7",iv:[0,4,7,10],name:"7"},
+ {q:"maj7",iv:[0,4,7,11],name:"Maj7"},
+ {q:"m7",iv:[0,3,7,10],name:"m7"}
+];
+function chordTemplate(root,iv){
+  const v=new Array(12).fill(0);
+  iv.forEach(x=>v[(root+x)%12]=1);
+  return v;
+}
+function cosineSim(a,b){
+  let dot=0,na=0,nb=0;
+  for(let i=0;i<a.length;i++){dot+=a[i]*b[i];na+=a[i]*a[i];nb+=b[i]*b[i];}
+  return dot/((Math.sqrt(na)*Math.sqrt(nb))||1);
+}
+function matchChord(chroma){
+  let best=null;
+  for(let root=0;root<12;root++){
+    for(const cq of CHORD_QUALITIES){
+      const sim=cosineSim(chroma,chordTemplate(root,cq.iv));
+      if(!best||sim>best.sim)best={root,quality:cq,sim};
+    }
+  }
+  return best;
+}
+/* Agrupa los frames de croma en segmentos de segLen segundos, promedia el croma de cada uno,
+   le asigna el acorde que mejor encaje y funde segmentos consecutivos con el mismo acorde en un
+   solo tramo — así no sale un acorde nuevo por cada ventana de análisis (~46ms). */
+function segmentChords(frames,duration,segLen){
+  const nSeg=Math.max(1,Math.ceil(duration/segLen));
+  const segs=[];
+  for(let s=0;s<nSeg;s++){
+    const t0=s*segLen, t1=Math.min(duration,t0+segLen);
+    const acc=new Array(12).fill(0);
+    let n=0;
+    frames.forEach(f=>{if(f.t>=t0&&f.t<t1){for(let i=0;i<12;i++)acc[i]+=f.chroma[i];n++;}});
+    if(n===0)continue;
+    const energy=acc.reduce((a,b)=>a+b,0);
+    if(energy<1e-3){segs.push({t0,t1,silence:true});continue;}
+    const norm=acc.map(v=>v/n);
+    const match=matchChord(norm);
+    segs.push({t0,t1,root:match.root,quality:match.quality,sim:match.sim});
+  }
+  // funde tramos consecutivos con el mismo acorde (o el mismo silencio)
+  const merged=[];
+  segs.forEach(s=>{
+    const last=merged[merged.length-1];
+    const sameChord=last&&!last.silence&&!s.silence&&last.root===s.root&&last.quality.q===s.quality.q;
+    const sameSilence=last&&last.silence&&s.silence;
+    if(last&&(sameChord||sameSilence)){last.t1=s.t1;}
+    else merged.push({...s});
+  });
+  return merged.filter(s=>!s.silence||merged.length===1);
+}
+function fmtTime(t){const m=Math.floor(t/60),s=Math.floor(t%60);return `${m}:${String(s).padStart(2,"0")}`;}
+
 function renderResult(chroma,key){
   document.getElementById("result").hidden=false;
   const rootName=NN[key.root];
@@ -195,15 +277,32 @@ function renderResult(chroma,key){
   });
 }
 
+function renderChords(segments){
+  const wrap=document.getElementById("chordList");
+  wrap.innerHTML="";
+  segments.forEach(s=>{
+    const row=document.createElement("div");row.className="chordrow";
+    const time=document.createElement("span");time.className="chordtime";
+    time.textContent=`${fmtTime(s.t0)}–${fmtTime(s.t1)}`;
+    const name=document.createElement("span");name.className="chordname";
+    name.textContent=`${NN[s.root]} ${s.quality.name}`;
+    row.appendChild(time);row.appendChild(name);
+    wrap.appendChild(row);
+  });
+  document.getElementById("chordCard").hidden=false;
+}
+
 async function analyzeArrayBuffer(arrBuf){
   setStatus("Decodificando audio…");
   const ctx=new (window.AudioContext||window.webkitAudioContext)();
   const audioBuffer=await ctx.decodeAudioData(arrBuf);
   setStatus("Analizando contenido armónico…");
   await new Promise(r=>setTimeout(r,0)); // deja pintar el status antes del trabajo pesado
-  const chroma=computeChroma(audioBuffer);
-  const key=estimateKey(chroma);
-  renderResult(chroma,key);
+  const {frames,duration,globalChroma}=computeChromaFrames(audioBuffer);
+  const key=estimateKey(globalChroma);
+  renderResult(globalChroma,key);
+  const segments=segmentChords(frames,duration,1.5);
+  renderChords(segments);
   setStatus("Listo.");
 }
 
@@ -211,6 +310,7 @@ document.getElementById("fileInput").addEventListener("change",async e=>{
   const file=e.target.files[0];
   if(!file)return;
   document.getElementById("result").hidden=true;
+  document.getElementById("chordCard").hidden=true;
   try{
     const buf=await file.arrayBuffer();
     await analyzeArrayBuffer(buf);
@@ -222,6 +322,7 @@ document.getElementById("fileInput").addEventListener("change",async e=>{
 
 document.getElementById("btnMic").addEventListener("click",async()=>{
   document.getElementById("result").hidden=true;
+  document.getElementById("chordCard").hidden=true;
   try{
     setStatus("Pidiendo permiso al micrófono…");
     const stream=await navigator.mediaDevices.getUserMedia({audio:true});
