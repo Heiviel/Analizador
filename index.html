@@ -170,10 +170,86 @@ function fft(re,im){
   }
 }
 
-/* Croma por ventanas de un AudioBuffer: FFT con Hann sobre ventanas solapadas, y se acumula la
-   energía de cada bin en su clase de altura (pc = nota sin octava) ponderada por magnitud.
-   Devuelve un croma por ventana (para acordes por segmento) además del croma global normalizado
-   (para la tonalidad de toda la pista). */
+/* Sube el nivel de toda la señal si viene floja (grabación con poca ganancia, típico de un
+   micrófono de portátil/móvil): sin esto una nota real y el ruido de fondo quedan igual de cerca
+   de cero y cuesta más distinguirlos. Normaliza al pico; no toca el audio que se reproduce luego,
+   solo la copia que se analiza. */
+function normalizeSignal(mono){
+  let peak=0;
+  for(let i=0;i<mono.length;i++){const a=Math.abs(mono[i]);if(a>peak)peak=a;}
+  if(peak<1e-6||peak>=0.9)return;
+  const gain=0.9/peak;
+  for(let i=0;i<mono.length;i++)mono[i]*=gain;
+}
+/* Resta de ruido de fondo (spectral subtraction clásica): promedia el espectro de las ventanas más
+   silenciosas de la propia grabación —asumiendo que ahí solo hay ruido de fondo del micro o de la
+   sala— y lo resta de todas las ventanas, recortando a 0. Baja el "suelo" de ruido antes de mirar
+   qué notas suenan más fuerte, que es justo lo que más penaliza a un micro de mala calidad. */
+function denoiseSpectrum(specs){
+  const n=specs.length,nBins=specs[0].length;
+  const energy=specs.map(mag=>mag.reduce((a,b)=>a+b,0));
+  const sorted=energy.slice().sort((a,b)=>a-b);
+  const quietCount=Math.max(1,Math.floor(n*0.1));
+  const quietAvg=sorted.slice(0,quietCount).reduce((a,b)=>a+b,0)/quietCount;
+  const median=sorted[n>>1];
+  // si nada suena claramente más flojo que el resto (p.ej. el acorde suena todo el rato, sin
+  // ningún hueco), esas "ventanas más silenciosas" no son ruido de fondo: son la propia música en
+  // un instante algo más suave. Restarlas igualmente recortaría señal real, no ruido — mejor no
+  // tocar el espectro que arriesgarse a eso.
+  if(median<=0||quietAvg>median*0.6)return;
+  const threshold=sorted[quietCount-1];
+  const noiseProfile=new Float32Array(nBins);
+  let used=0;
+  for(let i=0;i<n;i++){
+    if(energy[i]<=threshold){const mag=specs[i];for(let b=0;b<nBins;b++)noiseProfile[b]+=mag[b];used++;}
+  }
+  if(!used)return;
+  const ALPHA=0.85; // se resta solo el 85% del ruido estimado, con margen por si la estimación se queda corta
+  for(let b=0;b<nBins;b++)noiseProfile[b]=noiseProfile[b]/used*ALPHA;
+  for(let i=0;i<n;i++){
+    const mag=specs[i];
+    for(let b=0;b<nBins;b++)mag[b]=Math.max(0,mag[b]-noiseProfile[b]);
+  }
+}
+function medianInPlace(win,len){ // ordena win[0..len) in situ (ventana pequeña: inserción, sin reservar memoria) y devuelve la mediana
+  for(let i=1;i<len;i++){
+    const v=win[i];let j=i-1;
+    while(j>=0&&win[j]>v){win[j+1]=win[j];j--;}
+    win[j+1]=v;
+  }
+  return win[len>>1];
+}
+/* Atenúa transitorios (golpes, ruido de banda ancha) inspirado en la mitad "armónica" de HPSS
+   (Fitzgerald 2010): una nota sostenida tiene energía estable de una ventana a la siguiente
+   (mediana temporal alta y parecida al valor actual), un golpe dispara MUCHOS bins a la vez muy por
+   encima de su propia mediana en ese instante. A propósito NO se compara contra bins vecinos en
+   frecuencia (la otra mitad clásica de HPSS): a graves, un puñado de bins ya abarca varios
+   semitonos con esta FFT, y promediarlos habría difuminado justo la diferencia entre notas
+   vecinas (p.ej. Do vs Do#, la que separa un acorde mayor de uno menor). Cada bin se compara solo
+   contra su propio historial, nunca contra el de la nota de al lado. */
+function harmonicEnhance(specs){
+  const n=specs.length,nBins=specs[0].length,TWIN=9,half=TWIN>>1;
+  const win=new Float32Array(TWIN);
+  const harm=Array.from({length:n},()=>new Float32Array(nBins));
+  for(let b=0;b<nBins;b++){
+    for(let i=0;i<n;i++){
+      let c=0;
+      for(let k=Math.max(0,i-half);k<=Math.min(n-1,i+half);k++)win[c++]=specs[k][b];
+      harm[i][b]=medianInPlace(win,c);
+    }
+  }
+  for(let i=0;i<n;i++){
+    const mag=specs[i],h=harm[i];
+    for(let b=0;b<nBins;b++){
+      if(mag[b]>h[b])mag[b]=h[b]+(mag[b]-h[b])*0.15;
+    }
+  }
+}
+/* Croma por ventanas de un AudioBuffer: FFT con Hann sobre ventanas solapadas. Antes de acumular
+   energía por nota, la señal pasa por normalizeSignal + denoiseSpectrum + harmonicEnhance — pensado
+   para que una grabación de micrófono mediocre (portátil, móvil) no arrastre tanto ruido de fondo
+   ni golpes/percusión a la hora de decidir qué notas suenan. Devuelve un croma por ventana (para
+   acordes por segmento) además del croma global normalizado (para la tonalidad de toda la pista). */
 function computeChromaFrames(audioBuffer){
   const sr=audioBuffer.sampleRate;
   const ch0=audioBuffer.getChannelData(0);
@@ -183,30 +259,42 @@ function computeChromaFrames(audioBuffer){
     mono=new Float32Array(ch0.length);
     for(let i=0;i<ch0.length;i++)mono[i]=(ch0[i]+ch1[i])/2;
   }
+  normalizeSignal(mono);
   const N=4096, hop=2048;
   const hann=new Float32Array(N);
   for(let i=0;i<N;i++)hann[i]=0.5-0.5*Math.cos(2*Math.PI*i/(N-1));
   const minBin=Math.max(1,Math.floor(60*N/sr));   // ignora graves por debajo de ~60Hz (ruido/DC)
   const maxBin=Math.min(N/2,Math.ceil(5000*N/sr)); // y agudos por encima de ~5kHz (poco armónicamente relevante)
-  const frames=[]; // {t, chroma:Float32Array(12)}
-  const global=new Float32Array(12);
+  const nBins=maxBin-minBin;
+  const times=[];
+  const specs=[]; // magnitud por bin (solo el rango relevante), una fila por ventana
   for(let start=0;start+N<=mono.length;start+=hop){
     const re=new Float32Array(N), im=new Float32Array(N);
     for(let i=0;i<N;i++)re[i]=mono[start+i]*hann[i];
     fft(re,im);
+    const mag=new Float32Array(nBins);
+    for(let bin=minBin;bin<maxBin;bin++)mag[bin-minBin]=Math.hypot(re[bin],im[bin]);
+    specs.push(mag);
+    times.push(start/sr);
+  }
+  if(!specs.length)throw new Error("Audio demasiado corto para analizar.");
+  denoiseSpectrum(specs);
+  harmonicEnhance(specs);
+  const frames=[]; // {t, chroma:Float32Array(12)}
+  const global=new Float32Array(12);
+  specs.forEach((mag,fi)=>{
     const chroma=new Float32Array(12);
     for(let bin=minBin;bin<maxBin;bin++){
-      const mag=Math.hypot(re[bin],im[bin]);
-      if(mag<1e-6)continue;
+      const m=mag[bin-minBin];
+      if(m<1e-6)continue;
       const freq=bin*sr/N;
       const midi=69+12*Math.log2(freq/440);
       const pc=((Math.round(midi)%12)+12)%12;
-      chroma[pc]+=mag;
-      global[pc]+=mag;
+      chroma[pc]+=m;
+      global[pc]+=m;
     }
-    frames.push({t:start/sr,chroma});
-  }
-  if(!frames.length)throw new Error("Audio demasiado corto para analizar.");
+    frames.push({t:times[fi],chroma});
+  });
   const max=Math.max(...global)||1;
   const globalNorm=Array.from(global,v=>v/max);
   return {frames,duration:mono.length/sr,globalChroma:globalNorm};
