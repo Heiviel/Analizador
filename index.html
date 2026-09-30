@@ -29,6 +29,7 @@ button:disabled{opacity:.35;cursor:not-allowed}
 input[type=file]{display:none}
 label.filepick{background:var(--surface2);color:var(--ivory);border:1px solid var(--line);border-radius:8px;padding:10px 16px;font-size:14px;cursor:pointer;display:inline-block}
 label.filepick:hover{border-color:var(--brass)}
+label.filepick.disabled{opacity:.35;cursor:not-allowed;pointer-events:none}
 .status{font-size:13px;color:var(--teal-soft);min-height:18px;margin-top:8px}
 .status.err{color:var(--red)}
 #result{margin-top:16px}
@@ -92,8 +93,8 @@ a{color:var(--teal-soft)}
     <div class="controls">
       <label class="filepick" for="fileInput">📁 Elegir archivo de audio</label>
       <input type="file" id="fileInput" accept="audio/*">
-      <button class="btn" id="btnMic">🎙️ Grabar con micrófono (10s)</button>
-      <button class="btn" id="btnTab" hidden>🖥️ Capturar pestaña (10s)</button>
+      <button class="btn" id="btnMic">🎙️ Grabar con micrófono</button>
+      <button class="btn" id="btnTab" hidden>🖥️ Capturar pestaña</button>
     </div>
     <p class="status" id="status"></p>
     <div id="result" hidden>
@@ -583,26 +584,78 @@ document.getElementById("fileInput").addEventListener("change",async e=>{
   }
 });
 
-document.getElementById("btnMic").addEventListener("click",async()=>{
+const btnMic=document.getElementById("btnMic");
+const btnTab=document.getElementById("btnTab");
+
+/* Grabación de duración libre (antes eran 10s fijos): el propio botón hace de "grabar"/"detener",
+   con el tiempo transcurrido en su etiqueta. Mientras graba se bloquean el resto de controles para
+   no pisar la grabación en curso con otra acción. La captura del stream (micrófono vs. pestaña)
+   la resuelve cada botón por su cuenta más abajo; esto solo monta el MediaRecorder sobre el stream
+   ya obtenido y gestiona el ciclo de UI que comparten los dos. */
+function recordToggle(btn,idleLabel,stream,onCleanup){
+  const chunks=[];
+  let rec;
+  try{
+    rec=new MediaRecorder(stream);
+  }catch(err){
+    onCleanup();
+    throw err;
+  }
+  rec.ondataavailable=e=>chunks.push(e.data);
+  let timer=null;
+  const stopUI=()=>{
+    if(timer)clearInterval(timer);
+    onCleanup();
+    btn.textContent=idleLabel;
+    setRecordingUI(false,btn);
+  };
+  rec.onstop=async()=>{
+    stopUI();
+    try{
+      setStatus("Analizando grabación…");
+      await analyzeBlob(new Blob(chunks,{type:rec.mimeType}));
+    }catch(err){
+      console.error(err);
+      setStatus("No se pudo analizar la grabación: "+err.message,true);
+    }
+  };
+  // si el MediaRecorder se interrumpe solo (dispositivo desconectado, pestaña que deja de sonar...)
+  // hay que deshacer el estado de "grabando" igual que al pulsar Detener, o el botón se queda
+  // congelado para siempre con los demás controles bloqueados.
+  rec.onerror=e=>{
+    stopUI();
+    console.error(e.error||e);
+    setStatus("La grabación se interrumpió: "+((e.error&&e.error.message)||"error desconocido"),true);
+  };
+  try{
+    rec.start();
+  }catch(err){
+    onCleanup();
+    throw err; // aún no se ha activado la UI de "grabando": que lo informe el catch de cada botón
+  }
+  const t0=Date.now();
+  const tick=()=>{btn.textContent=`⏹️ Detener (${fmtTime((Date.now()-t0)/1000)})`;};
+  tick();
+  timer=setInterval(tick,250);
+  setRecordingUI(true,btn);
+  setStatus('🔴 Grabando… pulsa "Detener" cuando termines.');
+  return rec;
+}
+function setRecordingUI(recording,activeBtn){
+  const fileInput=document.getElementById("fileInput");
+  fileInput.disabled=recording;
+  document.querySelector("label.filepick").classList.toggle("disabled",recording);
+  [btnMic,btnTab].forEach(b=>{if(b!==activeBtn)b.disabled=recording;});
+}
+
+let micRec=null;
+btnMic.addEventListener("click",async()=>{
+  if(micRec&&micRec.state==="recording"){micRec.stop();return;}
   resetUI();
   try{
     setStatus("Pidiendo permiso al micrófono…");
     const stream=await navigator.mediaDevices.getUserMedia({audio:true});
-    const chunks=[];
-    const rec=new MediaRecorder(stream);
-    rec.ondataavailable=e=>chunks.push(e.data);
-    rec.onstop=async()=>{
-      stream.getTracks().forEach(t=>t.stop());
-      try{
-        await analyzeBlob(new Blob(chunks,{type:rec.mimeType}));
-      }catch(err){
-        console.error(err);
-        setStatus("No se pudo analizar la grabación: "+err.message,true);
-      }
-    };
-    rec.start();
-    setStatus("🔴 Grabando 10 segundos…");
-    setTimeout(()=>rec.stop(),10000);
+    micRec=recordToggle(btnMic,"🎙️ Grabar con micrófono",stream,()=>stream.getTracks().forEach(t=>t.stop()));
   }catch(err){
     console.error(err);
     setStatus("No se pudo acceder al micrófono: "+err.message,true);
@@ -612,9 +665,10 @@ document.getElementById("btnMic").addEventListener("click",async()=>{
 /* Captura de audio de una pestaña (YouTube, Spotify Web Player...): solo existe en navegadores
    de escritorio basados en Chromium/Firefox — en Android no hay getDisplayMedia, así que el botón
    se queda oculto ahí en vez de mostrar algo que falla siempre. */
-const btnTab=document.getElementById("btnTab");
 if(navigator.mediaDevices&&navigator.mediaDevices.getDisplayMedia)btnTab.hidden=false;
+let tabRec=null;
 btnTab.addEventListener("click",async()=>{
+  if(tabRec&&tabRec.state==="recording"){tabRec.stop();return;}
   resetUI();
   try{
     setStatus("Elige la pestaña donde suena la canción y marca \"Compartir audio de la pestaña\"…");
@@ -625,23 +679,9 @@ btnTab.addEventListener("click",async()=>{
       return;
     }
     const audioOnly=new MediaStream(stream.getAudioTracks());
-    const chunks=[];
-    const rec=new MediaRecorder(audioOnly);
-    rec.ondataavailable=e=>chunks.push(e.data);
-    rec.onstop=async()=>{
-      stream.getTracks().forEach(t=>t.stop());
-      try{
-        await analyzeBlob(new Blob(chunks,{type:rec.mimeType}));
-      }catch(err){
-        console.error(err);
-        setStatus("No se pudo analizar la captura: "+err.message,true);
-      }
-    };
-    rec.start();
-    setStatus("🔴 Capturando 10 segundos de la pestaña compartida…");
-    setTimeout(()=>rec.stop(),10000);
-    // si el usuario para de compartir manualmente antes de tiempo, cerramos igual
-    stream.getVideoTracks()[0].addEventListener("ended",()=>{if(rec.state==="recording")rec.stop();});
+    tabRec=recordToggle(btnTab,"🖥️ Capturar pestaña",audioOnly,()=>stream.getTracks().forEach(t=>t.stop()));
+    // si el usuario para de compartir manualmente desde el control nativo del navegador, cerramos igual
+    stream.getVideoTracks()[0].addEventListener("ended",()=>{if(tabRec.state==="recording")tabRec.stop();});
   }catch(err){
     console.error(err);
     setStatus("No se pudo capturar la pestaña: "+err.message,true);
